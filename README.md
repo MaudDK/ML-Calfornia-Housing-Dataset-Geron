@@ -1,0 +1,1 @@
+Exploration and training optimal model to predict housing prices using the california housing dataset from the Statlib Repo. The Dataset is based from the 1990 California census. The dataset is an exact copy of the one used in the book Hands-on Machine Learning with Scikit-Learn, Keras, & Tensorflow, by Aurelien Geron.
