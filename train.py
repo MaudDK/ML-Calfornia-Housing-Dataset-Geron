@@ -1,19 +1,41 @@
+from statistics import LinearRegression
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import StratifiedShuffleSplit
+import joblib
+from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
-from sklearn.model_selection import cross_val_score
+from sklearn.model_selection import cross_val_score, GridSearchCV
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.impute import SimpleImputer
 from sklearn.compose import ColumnTransformer
-
 from sklearn.base import BaseEstimator, TransformerMixin
-# We want [total_rooms per total bedrooms] and [households per population] and [households per total rooms]
+from sklearn.linear_model import LinearRegression
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.ensemble import RandomForestRegressor
 
+
+housing = pd.read_csv("datasets\housing\housing.csv")
+
+
+# Stratify Spliting Based on Income Cats in bins
+bins = [0., 2.5, 3.5, 4.7, 8, np.inf]
+housing['income_cat'] = pd.cut(
+    housing["median_income"], bins=bins, labels=range(len(bins)-1))
+
+X = housing.drop('median_house_value', axis=1)
+y = housing['median_house_value']
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.3, random_state=42, stratify=housing['income_cat'])
+
+
+# Removing Income Cats from dataset as it is no longer needed
+for dataset in [X_train, X_test, housing]:
+    dataset.drop('income_cat', axis=1, inplace=True)
+
+
+# Combines Attributes , see the explore notebook to figure out how these attributes were discovered
 rooms_ix, bedrooms_ix, population_ix, households_ix = 3, 4, 5, 6
-
-num_attribs = []
-cat_attribs = []
 
 
 class CombinedAttributesAdder(BaseEstimator, TransformerMixin):
@@ -45,13 +67,20 @@ class CombinedAttributesAdder(BaseEstimator, TransformerMixin):
             return np.c_[X, rooms_per_bedrooms, households_per_population]
 
 
-num_attribs = []
-cat_attribs = []
+num_attribs = list(X_train)[:-1]
+cat_attribs = ['ocean_proximity']
 
-num_pipeline = Pipeline([('imputer', SimpleImputer(strategy="median")),
-                         ('attribs_adder', CombinedAttributesAdder()),
-                         ('std_scaler', StandardScaler()),
-                         ])
+num_transformer = Pipeline([('imputer', SimpleImputer(strategy="median")),
+                            ('attribs_adder', CombinedAttributesAdder()),
+                            ('std_scaler', StandardScaler()),
+                            ])
 
-full_pipeline = ColumnTransformer([('num', num_pipeline, num_attribs),
-                                   ('cat', OneHotEncoder(), cat_attribs)])
+preprocessor = ColumnTransformer([('num', num_transformer, num_attribs),
+                                  ('cat', OneHotEncoder(), cat_attribs)])
+
+full_pipeline = Pipeline([('preprocessor', preprocessor),
+                          ('classifier', LinearRegression())])
+
+
+X_train = preprocessor.fit_transform(X_train)
+print(X_train)
