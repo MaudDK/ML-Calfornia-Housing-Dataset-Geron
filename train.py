@@ -1,7 +1,7 @@
-from statistics import LinearRegression
+
 import pandas as pd
 import numpy as np
-import joblib
+from joblib import parallel_backend
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection import cross_val_score, GridSearchCV
@@ -9,8 +9,7 @@ from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.impute import SimpleImputer
 from sklearn.compose import ColumnTransformer
 from sklearn.base import BaseEstimator, TransformerMixin
-from sklearn.linear_model import LinearRegression
-from sklearn.tree import DecisionTreeRegressor
+from sklearn.metrics import mean_squared_error
 from sklearn.ensemble import RandomForestRegressor
 
 
@@ -44,43 +43,118 @@ class CombinedAttributesAdder(BaseEstimator, TransformerMixin):
         self.add_households_per_population = add_households_per_population
         self.add_households_per_total_rooms = add_households_per_total_rooms
 
-    def fit(self, X):
+    def fit(self, X, y=None):
         return self
 
     def transform(self, X):
-        transforms = []
         if self.add_rooms_per_bedrooms:
             rooms_per_bedrooms = X[:, rooms_ix] / X[:, bedrooms_ix]
-            transforms.append(rooms_per_bedrooms)
+            X = np.c_[X, rooms_per_bedrooms]
 
         if self.add_households_per_population:
             households_per_population = X[:,
                                           households_ix] / X[:, population_ix]
-            transforms.append(households_per_population)
+            X = np.c_[X, households_per_population]
 
         if self.add_households_per_total_rooms:
             households_per_rooms = X[:, households_ix] / X[:, rooms_ix]
-            transforms.append(households_per_rooms)
-            return np.c_[X, rooms_per_bedrooms, households_per_population, households_per_rooms]
+            X = np.c_[X, households_per_rooms]
 
-        else:
-            return np.c_[X, rooms_per_bedrooms, households_per_population]
+        return X
+
+# Top Feature Selector
 
 
-num_attribs = list(X_train)[:-1]
+def indices_of_top_k(arr, k):
+    return np.sort(np.argpartition(np.array(arr), -k)[-k:])
+
+
+class TopFeatureSelector(BaseEstimator, TransformerMixin):
+    def __init__(self, feature_importances, k):
+        self.feature_importances = feature_importances
+        self.k = k
+
+    def fit(self, X, y=None):
+        self.feature_indices_ = indices_of_top_k(
+            self.feature_importances, self.k)
+        return self
+
+    def transform(self, X):
+        return X[:, self.feature_indices_]
+
+# Display Score Method
+
+
+def display_scores(scores):
+    print('Scores:', scores)
+    print('Mean:', scores.mean())
+    print('Standard Deviation:', scores.std())
+
+
+# Build Pipeline
+encodes = list(housing['ocean_proximity'].value_counts().index)
+num_attribs = list(X_train)[: -1]
+extra_attribs = ['rooms_per_bedrooms',
+                 'households_per_population', 'households_per_rooms']
 cat_attribs = ['ocean_proximity']
+
+rf_reg = RandomForestRegressor(random_state=42)
 
 num_transformer = Pipeline([('imputer', SimpleImputer(strategy="median")),
                             ('attribs_adder', CombinedAttributesAdder()),
                             ('std_scaler', StandardScaler()),
                             ])
 
+
 preprocessor = ColumnTransformer([('num', num_transformer, num_attribs),
                                   ('cat', OneHotEncoder(), cat_attribs)])
 
-full_pipeline = Pipeline([('preprocessor', preprocessor),
-                          ('classifier', LinearRegression())])
+
+# Transform Data
+X_train_prep = preprocessor.fit_transform(X_train)
 
 
-X_train = preprocessor.fit_transform(X_train)
-print(X_train)
+# Grid Search
+param_grid = [
+    {'bootstrap': [False], 'max_depth': [32], 'max_features': [
+        5], 'n_estimators': [700], 'min_samples_leaf': [3], 'min_samples_split': [8]},
+    {'bootstrap': [False], 'max_depth': [32], 'max_features': [
+        5], 'min_samples_leaf': [3], 'min_samples_split': [8], 'n_estimators': [700]},
+    {'bootstrap': [False], 'max_depth': [16],
+     'max_features': [6], 'n_estimators': [400]},
+    {'bootstrap': [False], 'max_depth': [30],
+     'max_features': [6], 'n_estimators': [500]},
+    {'bootstrap': [False], 'max_depth': [32],
+     'max_features': [5], 'n_estimators': [600]},
+    {'bootstrap': [False], 'max_depth': [32],
+     'max_features': [5], 'n_estimators': [700]},
+    {'n_estimators': [900], 'min_samples_split': [3], 'min_samples_leaf': [1], 'max_features': [5], 'max_depth': [45], 'bootstrap': [False]}]
+
+with parallel_backend('threading', n_jobs=5):
+    grid_search = GridSearchCV(rf_reg, param_grid, cv=2, scoring='neg_mean_squared_error',
+                               return_train_score=True, verbose=10, n_jobs=5)
+    grid_search.fit(X_train_prep, y_train)
+
+feature_importances = grid_search.best_estimator_.feature_importances_
+cat_encoder = preprocessor.named_transformers_["cat"]
+cat_one_hot_attribs = list(cat_encoder.categories_[0])
+attributes = num_attribs + extra_attribs + cat_one_hot_attribs
+print(sorted(zip(feature_importances, attributes), reverse=True))
+
+final_model = grid_search.best_estimator_
+
+X_test_prepared = preprocessor.transform(X_test)
+final_predictions = final_model.predict(X_test_prepared)
+
+final_mse = mean_squared_error(y_test, final_predictions)
+final_rmse = np.sqrt(final_mse)
+print(final_rmse)
+
+full_pipeline = Pipeline([('prep', preprocessor), ('feature_selector',
+                                                   TopFeatureSelector(feature_importances, 10)), ('clf', final_model)])
+
+full_pipeline.fit(X_train, y_train)
+final_predictions = full_pipeline.predict(X_test)
+final_mse = mean_squared_error(y_test, final_predictions)
+final_rmse = np.sqrt(final_mse)
+print(final_rmse)
